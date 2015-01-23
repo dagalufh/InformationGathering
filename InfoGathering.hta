@@ -1,0 +1,335 @@
+<html>
+<head>
+<title>Information Gathering</title>
+<HTA:APPLICATION 
+     APPLICATIONNAME="Information Gathering"
+     SCROLL="yes"
+     SINGLEINSTANCE="yes"
+     WINDOWSTATE="normal">
+	 DISPLAYSTATUSBAR = "yes"
+</head>
+<script language="VBScript">
+'###################################
+' Created by Mikael Aspehed
+'###################################
+
+Dim fso, objFolder, objShell, moduleDirectory, moduleArray, LogDirectory, LogFile
+
+' Define the global objects needed
+Set objShell = CreateObject ("Shell.Application")
+Set fso = CreateObject("Scripting.FileSystemObject")
+Set objShell_wscript= CreateObject("WScript.Shell")
+
+moduleArray = array()
+
+Sub Include ()
+	Dim moduleContents, moduleHandle
+	' Get the directory that contains the modules
+	moduleDirectory = fso.GetAbsolutePathName(".") & "\modules"
+	
+	' MsgBox for debug only
+	' MsgBox "Module Directory: " & moduleDirectory
+	
+	' Go through the modules folder and search for VBScript files
+	If (fso.FolderExists(moduleDirectory)) Then
+		Set objFolder = objShell.Namespace(moduleDirectory)
+		For Each strFileName In objFolder.Items
+			
+			' Check filetype for a valid value
+			If (InStr(objFolder.GetDetailsOf(strFileName,2), "VBScript") > 0) Then
+				' MsgBox for debug only
+				'MsgBox strFileName & " Type: " & objFolder.GetDetailsOf(strFileName,2)
+				'MsgBox moduleDirectory & "\" & strFileName
+				' Open the script file and read the entire contents
+				Set moduleHandle = fso.OpenTextFile(moduleDirectory & "\" & strFileName, 1)
+				moduleContents = moduleHandle.ReadAll()
+				
+				' Execute it to include it in the current running script.
+				ExecuteGlobal moduleContents
+			End If
+		Next
+	End If
+End Sub
+
+' Used to register the modules in the array
+Sub Register_Class (Class_Instance)
+	
+	ReDim Preserve moduleArray(UBound(moduleArray)+1)
+	Set moduleArray(UBound(moduleArray)) =  Class_Instance
+End Sub
+
+
+
+' When the script has finished loading, execute this section.
+	Sub Window_onLoad
+		window.resizeTo 1200,600
+		document.getElementById("Status").InnerHTML = "Status: Starting inclusion.."
+		document.getElementById("StartButton").Disabled = true
+		Include
+
+		For Each moduleObject In moduleArray
+			'MsgBox "Type of Object: " & TypeName(moduleObject)
+			dim moduleList_div, newModule
+			
+			Set moduleList_div = document.getElementById("moduleList")
+			Set newModule = document.createElement("div")
+			
+			document.getElementById("Status").InnerHTML = "Status: Fetching options for: " & moduleObject.Name
+			sleepy
+			
+			newModule.className = "Module"
+			moduleObject.List_Options()
+			
+			' Build the table showing the module and options.
+			moduleList_Content = ""
+			moduleList_Content = moduleList_Content &  "<span class='Headline'><label><input type='checkbox' name='" & moduleObject.Name & "' onclick='javascript:Checking(this)'>" & moduleObject.Name & "</label></span></td></tr>"
+			moduleList_Content = moduleList_Content &  "<table  cellpading='0' cellspacing='0' id='" & moduleObject.Name & "_Options' class='HiddenOptions'>"
+			
+			For Each moduleOption in moduleObject.Options
+				If (InStr(LCase(moduleOption), "input;") = 1) Then
+					' Deifne defaults
+					Option_Description = ""
+					Option_Required = ""
+					Option_Required_Text = ""
+					Option_Title = ""
+					
+					Option_Input = Split(moduleOption, ";")
+					If (InStr(LCase(Option_Input(1)),"required") = 1) Then
+						Option_Required = "Required"
+						Option_Required_Text ="*"
+						Option_Title = Option_Input(2)
+						If (UBound(Option_Input) = 3) Then
+							Option_Description = " | Note: " & Option_Input(3)
+						End If
+					Else
+						Option_Title = Option_Input(1)
+						If (UBound(Option_Input) = 2) Then
+							Option_Description = " | Note: " & Option_Input(2)
+						End If
+					End If
+					moduleList_Content = moduleList_Content & "<tr><td class='ContentTD'><span  class='Content'><label>" & Option_Title  & Option_Required_Text &  Option_Description & "<br><input class='LongInput " & Option_Required & "' type='text' name='" & Option_Title & "'></label></span></td></tr>"
+				End If
+			Next
+			
+			ColumnCounter = 0
+			For Each moduleOption in moduleObject.Options
+				If Not (InStr(LCase(moduleOption), "input;") > 0 ) Then
+					If (ColumnCounter = 0) Then
+						moduleList_Content = moduleList_Content & "<tr>"
+					End If
+					
+					moduleList_Content = moduleList_Content & "<td class='ContentTD'><span  class='Content'><label><input type='checkbox' name='" & moduleOption & "'>" & moduleOption & "</label></span></td>"
+					
+					If (ColumnCounter = 4) Then
+						moduleList_Content = moduleList_Content & "</tr>"
+						ColumnCounter = 0
+					Else
+						ColumnCounter = ColumnCounter + 1
+					End If
+				End If
+			Next
+						
+			moduleList_Content = moduleList_Content & "</tr></table>"
+			
+			newModule.innerHTML = moduleList_Content
+			moduleList_div.appendChild  newModule
+		
+		Next
+		CheckRequired()
+		document.getElementById("Status").InnerHTML = "Status: Ready"
+		document.getElementById("StartButton").Disabled = false
+	End Sub
+	
+	' This is used to interupt the script execution to allow the hta to perform output.
+	Sub sleepy
+		strCmd = "%COMSPEC% /c"
+		objShell_wscript.Run strCmd,0
+	End Sub 
+	
+	Sub Gather_Information
+		Dim SelectedOptions, ComputerNames, Result, UnresponsiveComputers
+		
+		document.getElementById("StartButton").Disabled = true
+		
+		document.getElementById("Status").InnerHTML = "Status: Verifying selection"
+		If Not CheckRequired Then
+			document.getElementById("Status").InnerHTML = "Status: Ready"
+			Exit Sub			
+		End If
+		
+		
+		document.getElementById("Status").InnerHTML = "Status: Gathering Information"
+		' Define the name of the directory for the logfiles.
+		LogDirectory = fso.GetAbsolutePathName(".") & "\Log-" & DatePart("yyyy",Now()) & "-" & Right(String(1,"0") & DatePart("m",Now()), 2) & "-" & Right(String(1,"0") & DatePart("d",Now()),2) & "-" & Right(String(1,"0") & DatePart("h",Now()),2) & "." & Right(String(1,"0") & DatePart("n",Now()),2)  & "\"
+		
+		' Prepare the directory for log files.
+		If Not fso.FolderExists(LogDirectory) Then
+			fso.CreateFolder(LogDirectory)
+		End If
+		
+		' Define a file for those computers that are not alive.
+		Set UnresponsiveComputers = fso.OpenTextFile(LogDirectory & "\Unresponsive.log",8,true)
+		UnresponsiveComputers.WriteLine "These PC:s did not respond."
+		' Fetch the computernames from the textarea.
+		ComputerNames = Split(ComputerList.Value, vbCrlf)
+		For Each ComputerName in ComputerNames
+			If (CheckPulse(ComputerName)) Then
+				' Go through each module to see if it's been checked or not.
+				document.getElementById("Status").InnerHTML = "Status: Gathering Information from " & ComputerName & ". The interface is locked while working."
+				sleepy
+				For Each moduleObject In moduleArray
+					SelectedOptions = array()
+					Result = array()
+					
+					If (document.getElementById(moduleObject.Name).checked) Then
+						
+						document.getElementById("Status").InnerHTML = "Status: Gathering Information from " & ComputerName & " and " & moduleObject.Name & ". The interface is locked while working."
+						sleepy
+						 Set InputBoxes = document.getElementById(moduleObject.Name & "_Options").getElementsByTagName("input") 
+						 For Each OptionBox In InputBoxes
+						  
+							If (OptionBox.Type = "text") Then
+								ReDim Preserve SelectedOptions(UBound(SelectedOptions)+1)
+								SelectedOptions(UBound(SelectedOptions)) = OptionBox.Name & ";" & OptionBox.Value
+							End If
+							
+							If (OptionBox.checked) Then
+								ReDim Preserve SelectedOptions(UBound(SelectedOptions)+1)
+								SelectedOptions(UBound(SelectedOptions)) = OptionBox.Name
+							End If
+						 Next
+						 
+						Result = moduleObject.Work(ComputerName, SelectedOptions)
+						WriteToLogFile ComputerName, moduleObject.Name, Result
+					
+					End If
+				Next
+			Else
+				UnresponsiveComputers.WriteLine ComputerName
+			End If
+		Next
+		document.getElementById("Status").InnerHTML = "Status: Ready"
+		MsgBox "Complete. Check the directory [" & LogDirectory & "] for the logfiles."
+		document.getElementById("StartButton").Disabled = false
+	End Sub
+	
+	' This function is used to see if the computer is alive or not.
+	Function CheckPulse (ComputerName)
+		Dim CP_WMIService
+		On Error Resume Next
+		Set CP_WMIService = GetObject("winmgmts:\\" & ComputerName & "\root\cimv2")
+		If (Err.Number <> 0) Then
+			CheckPulse = False
+		Else
+			CheckPulse = True
+		End If
+	End Function
+	
+	' This function is to verify if any input boxes has the required class name.  If it does but does not contain any text, the script will halt.
+	Function CheckRequired ()
+	
+		For Each moduleObject In moduleArray
+	
+			If (document.getElementById(moduleObject.Name).checked) Then
+	
+				 Set InputBoxes = document.getElementById(moduleObject.Name & "_Options").getElementsByTagName("input") 
+				 For Each OptionBox In InputBoxes
+	
+					If (InStr(LCase(OptionBox.className), "required")>0) Then
+						If (Len(OptionBox.Value) < 1) Then
+							MsgBox "The input box [" & OptionBox.Name & "] requires text."
+							CheckRequired = False
+							Exit Function
+						End If
+					End If
+					
+				 Next
+				 
+			End If
+		Next	
+		CheckRequired = True
+	End Function
+	
+	Sub WriteToLogFile (ComputerName, ModuleName, LogRow)
+		' Check what sort of logging is selected
+		' Order results in logfiles per computer		
+		If (Order(0).Checked) Then
+			'MsgBox "Logging: " & ComputerName & " in Module " & ModuleName & " In a file per computer"
+			
+			Set LogFile = fso.OpenTextFile(LogDirectory & ComputerName & ".log",8,true)
+			LogFile.WriteLine "Module: " & ModuleName
+			LogFile.WriteLine "Property" & vbtab & "Value"
+			For Each Row in LogRow
+				'MsgBox Row
+				Result = Split(Row, ";")
+				LogFile.WriteLine Result(0) & vbtab & Result(1)
+			Next
+			LogFile.WriteLine "----------------------------------------------------------------------------"
+			LogFile.Close()
+		End If
+		
+		' Order results in logfiles per module
+		If (Order(1).Checked) Then
+			'MsgBox "Logging: " & ComputerName & " in Module " & ModuleName & " In a file per module"
+			
+			Set LogFile = fso.OpenTextFile(LogDirectory & ModuleName & ".log",8,true )
+			LogFile.WriteLine "Computer: " & ComputerName
+			
+			LogFile.WriteLine "Property" & vbtab & "Value"
+			For Each Row in LogRow
+				Result = Split(Row, ";")
+				LogFile.WriteLine Result(0) & vbtab & Result(1)
+			Next
+			LogFile.WriteLine "----------------------------------------------------------------------------"
+			LogFile.Close()
+		End If
+	End Sub
+</script>
+
+<script language="Javascript">
+
+	// This function checks to see if the options for the current module should be shown or not.
+	function Checking (variab) {
+		if (variab.checked) {
+			document.getElementById(variab.name+"_Options").style.display = "inline";
+		} else {
+			document.getElementById(variab.name+"_Options").style.display = "none";
+		}
+		
+	}
+</script>
+
+<style lang="text/css">
+	.Headline {background-color: #9D9EA8; border-bottom: 1px solid #000000; font-size: 14px; font-weight: bold;}
+	.ComputerList {Width: 260px;}
+	.Top {vertical-align: top;}
+	.Content {background-color: #CECED2;}
+	.ContentTD {width: 200px;}
+	.LongInput {width: 100%;}
+	.Module {border: 1px solid #000000; font-size: 10pt; width: 100%; margin-bottom: 10px;}
+	body {background-color: #7B7E8D; font-family: verdana;}
+	span {width: 100%}
+	table {border: 1px solid #000000; margin-bottom: 0px;  font-size: 10pt; width: 100%}
+	.HiddenOptions {display:none;}
+	.List {width: 250px; height: 200px;}
+		
+	.color-primary-0 { color: #7B7E8D }	/* Main Primary color */
+	.color-primary-1 { color: #CECED2 }
+	.color-primary-2 { color: #9D9EA8 }
+	.color-primary-3 { color: #5F6276 }
+	.color-primary-4 { color: #444860 }	
+
+</style>
+
+<body>
+
+<table cellpading="0" cellspacing="0">
+<tr class="Headline"><td class="Headline ComputerList">Target Computers</td><td class="Headline">Options</td></tr>
+<tr class="Content"><td  class="Top"><textarea class="List" name="ComputerList">Computernames</textarea></td><td class="Top">Logfile grouped by:<br> <label><input type="radio" checked name="Order" value="Computer">Computer</label><br><label><input type="radio" name="Order" value="Module">Module</label><br><br><button onclick="VBScript:Gather_Information" id="StartButton">Start Information Gathering</button></td></tr>
+</table>
+<br>
+<div id="Status" class="Headline Module"></div>
+<div id="ModuleList">
+</div>
+</body>
+</html>
